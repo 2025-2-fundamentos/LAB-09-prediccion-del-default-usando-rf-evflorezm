@@ -92,3 +92,158 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+
+# homework.py (por ejemplo en la raíz del repo)
+import os
+import gzip
+import pickle
+import json
+import pandas as pd
+
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    precision_score,
+    balanced_accuracy_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+)
+
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.rename(columns={"default payment next month": "default"})
+    df = df.drop(columns=["ID"])
+    df = df.dropna()
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: x if x <= 4 else 4)
+    return df
+
+
+def build_pipeline() -> Pipeline:
+    categorical_features = ["SEX", "EDUCATION", "MARRIAGE"]
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
+        ],
+        remainder="passthrough",
+    )
+
+    rf = RandomForestClassifier(random_state=42)
+
+    pipe = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("classifier", rf),
+        ]
+    )
+
+    return pipe
+
+
+def tune_model(pipeline: Pipeline, X_train, y_train) -> GridSearchCV:
+    param_grid = {
+        "classifier__n_estimators": [50, 100, 200],
+        "classifier__max_depth": [None, 10, 20],
+        "classifier__min_samples_split": [2, 5],
+        "classifier__min_samples_leaf": [1, 2],
+    }
+
+    grid = GridSearchCV(
+        estimator=pipeline,
+        param_grid=param_grid,
+        cv=10,
+        scoring="balanced_accuracy",
+        n_jobs=-1,
+        verbose=0,
+        refit=True,
+    )
+
+    grid.fit(X_train, y_train)
+    return grid
+
+
+def calculate_metrics(model, X, y, dataset_name: str) -> dict:
+    y_pred = model.predict(X)
+    return {
+        "type": "metrics",
+        "dataset": dataset_name,
+        "precision": precision_score(y, y_pred, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(y, y_pred),
+        "recall": recall_score(y, y_pred, zero_division=0),
+        "f1_score": f1_score(y, y_pred, zero_division=0),
+    }
+
+
+def calculate_confusion_matrix(model, X, y, dataset_name: str) -> dict:
+    y_pred = model.predict(X)
+    cm = confusion_matrix(y, y_pred)
+    return {
+        "type": "cm_matrix",
+        "dataset": dataset_name,
+        "true_0": {
+            "predicted_0": int(cm[0, 0]),
+            "predicted_1": int(cm[0, 1]),
+        },
+        "true_1": {
+            "predicted_0": int(cm[1, 0]),
+            "predicted_1": int(cm[1, 1]),
+        },
+    }
+
+
+def save_model(model, path: str = "files/models/model.pkl.gz") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with gzip.open(path, "wb") as f:
+        pickle.dump(model, f)
+
+
+def save_metrics(metrics_list, path: str = "files/output/metrics.json") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for m in metrics_list:
+            f.write(json.dumps(m) + "\n")
+
+
+def main():
+    print("CWD actual:", os.getcwd())
+
+    # Cargar datos
+    train_df = pd.read_csv("files/input/train_data.csv.zip")
+    test_df = pd.read_csv("files/input/test_data.csv.zip")
+
+    # Limpiar
+    train_df_clean = clean_data(train_df)
+    test_df_clean = clean_data(test_df)
+
+    # Split
+    X_train = train_df_clean.drop(columns=["default"])
+    y_train = train_df_clean["default"]
+    X_test = test_df_clean.drop(columns=["default"])
+    y_test = test_df_clean["default"]
+
+    # Modelo
+    pipeline = build_pipeline()
+    model = tune_model(pipeline, X_train, y_train)
+
+    # Guardar modelo
+    save_model(model)  # => files/models/model.pkl.gz
+
+    # Métricas
+    metrics = []
+    metrics.append(calculate_metrics(model, X_train, y_train, "train"))
+    metrics.append(calculate_metrics(model, X_test, y_test, "test"))
+    metrics.append(calculate_confusion_matrix(model, X_train, y_train, "train"))
+    metrics.append(calculate_confusion_matrix(model, X_test, y_test, "test"))
+
+    # Guardar métricas
+    save_metrics(metrics)
+
+
+if __name__ == "__main__":
+    main()
+
